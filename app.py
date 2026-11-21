@@ -142,6 +142,13 @@ def run(code, df):
     exec(code, env)
     return env.get("answer", ""), env.get("table"), env.get("fig")
 
+LANGS = {"Auto (same as my question)": "", "हिन्दी": "Hindi (Devanagari script)", "Hinglish": "Hinglish (Hindi written in English letters)", "English": "English",
+         "தமிழ்": "Tamil", "తెలుగు": "Telugu", "বাংলা": "Bengali", "मराठी": "Marathi", "ગુજરાતી": "Gujarati", "ਪੰਜਾਬੀ": "Punjabi", "ಕನ್ನಡ": "Kannada", "മലയാളം": "Malayalam"}
+def lang_rule():
+    l = LANGS.get(st.session_state.get("lang", "Auto (same as my question)"), "")
+    if not l: return "Reply in the SAME language and script as the user's question (Hindi question -> Hindi, Hinglish -> Hinglish, English -> English)."
+    return f"Reply ONLY in {l}."
+
 def ask(q, df, prof, sig):
     prompt = f"""You are a senior data analyst. A pandas DataFrame `df` is already loaded.
 SCHEMA:
@@ -153,6 +160,7 @@ RULES: write python only. NO imports (pd, np, px, go are ready). Never modify df
 Set `answer` = markdown string with real computed numbers (use f-strings) and a clear business insight.
 Optionally set `table` (DataFrame) and `fig` (plotly figure, template='plotly_white', titled, labelled).
 Reply with ONE ```python block only.
+LANGUAGE: {lang_rule()} This applies to `answer` text and chart titles/labels. Keep variable names and column names in English.
 {examples(sig)}
 
 QUESTION: {q}"""
@@ -172,6 +180,7 @@ except Exception as e: st.sidebar.error(str(e)); df = None
 if df is None:
     st.info("👈 Pick a data source from the sidebar to begin."); st.stop()
 
+st.sidebar.selectbox("🌐 Answer language", list(LANGS), key="lang")
 sig = "|".join(sorted(df.columns)).lower()[:200]
 prof = profile(df)
 if st.session_state.get("ds") != sig + str(len(df)):
@@ -187,7 +196,7 @@ with t1:
     if len(miss): st.plotly_chart(px.bar(miss, title="Missing values by column", template="plotly_white"), use_container_width=True)
     if st.button("🧠 Analyze this dataset", type="primary"):
         with st.spinner("Reading your data..."):
-            try: st.session_state.summary = llm(f"You are a senior analyst. Explain this dataset in simple Hinglish-friendly English: what it is about, key patterns, data quality issues, and 5 smart questions to ask next.\n{prof}\nSAMPLE:\n{df.head(8).to_string()}")
+            try: st.session_state.summary = llm(f"You are a senior analyst. Explain this dataset in simple words. {lang_rule()} Cover: what it is about, key patterns, data quality issues, and 5 smart questions to ask next.\n{prof}\nSAMPLE:\n{df.head(8).to_string()}")
             except Exception as e: st.error(e)
         if st.session_state.summary: log("dataset_summary", sig, note=st.session_state.summary[:1500])
     if st.session_state.summary: st.markdown(st.session_state.summary)
