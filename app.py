@@ -9,6 +9,8 @@ st.markdown("""<style>
 .block-container{padding-top:3rem;max-width:1500px}
 html{font-size:15px}[data-testid=stChatMessage]{padding:.5rem .75rem}
 .st-key-hdr{position:sticky;top:3.4rem;z-index:100;background:var(--background-color,#0e1117);padding:.3rem 0 .4rem;border-bottom:1px solid rgba(128,128,128,.25)}
+.st-key-hdr button p{font-size:.78rem}.st-key-hdr button{padding:.15rem .4rem;min-height:2rem}
+[data-testid=stChatMessage] h1,[data-testid=stChatMessage] h2,[data-testid=stChatMessage] h3{font-size:1.05rem!important;margin:.3rem 0!important}
 .hero{font-size:1.5rem;font-weight:800;margin:0 0 .2rem}.sub{opacity:.65;font-size:.85rem;margin-bottom:.6rem}
 [data-testid=stTabs] [role=tablist]{position:sticky;top:0;z-index:5;background:var(--background-color)}
 h1{font-weight:800;letter-spacing:-.5px}
@@ -176,7 +178,7 @@ def ask(q, df, prof, sig, hist=""):
         "2) The user is EXPLAINING what a column, value or term means in this dataset (e.g. 'iska matlab ...', 'X means ...', 'remember that ...') -> reply `LEARN: <one-sentence fact in English using exact column names>` then a new line with a short acknowledgment.",
         "3) A question about the data -> reply with ONE ```python block only, following these rules:",
         "   - NO imports (pd, np, px, go are ready). Never modify df; use d = df.copy().",
-        "   - Set `answer` = SHORT markdown (max 4 bullets or 5 lines) with real computed numbers (f-strings) and one clear insight.",
+        "   - Set `answer` = SHORT markdown (max 4 bullets or 5 lines) with real computed numbers (f-strings) and one clear insight. NO markdown headings (#).",
         "   - Optionally set `table` (DataFrame) and `fig` (plotly figure, titled, labelled, height<=380).",
         f"LANGUAGE: {lang_rule()} Applies to every reply, chart titles and labels. Keep variable and column names in English.",
         examples(sig), "", f"QUESTION: {q}"])
@@ -212,7 +214,8 @@ def auto_charts(df):
     return figs
 
 OV = "🔎 Overview"
-with st.container(key="hdr"):   # stays frozen at the top while the page scrolls
+hdr = st.container(key="hdr")
+with hdr:   # stays frozen at the top while the page scrolls
     st.markdown('<div class="hero">📊 DataPilot AI</div><div class="sub">Upload or paste data, then ask anything. It learns from your 👍 / 👎.</div>', unsafe_allow_html=True)
     view = st.radio("view", [OV, "💬 Ask AI"], horizontal=True, label_visibility="collapsed", key="view")
 try: df, name = load()
@@ -247,16 +250,21 @@ if view == OV:
                     except Exception as ex: st.error(ex)
             st.markdown(st.session_state.summary or "_Click the button to get a quick summary._")
 
-@st.fragment   # only this part reruns on chat actions -> much faster
-def chat():
-    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+def chips_bar():
     nums = [c for c in df.select_dtypes("number") if not c.lower().endswith("id")]
     cats = [c for c in df.select_dtypes(["object", "category"]) if 2 <= df[c].nunique() <= 15]
     chips = ["How many rows are there in total?", "Any data quality issues?"]
     if nums and cats: chips.insert(1, f"{nums[0]} by {cats[0]} bar chart")
     if nums: chips.append(f"Top 5 outliers in {nums[0]}")
-    cc = st.columns(len(chips))
-    for col, ch in zip(cc, chips): col.button(ch, key="chip" + ch, use_container_width=True, on_click=lambda ch=ch: st.session_state.update(pq=ch))
+    for col, ch in zip(st.columns(len(chips)), chips):
+        col.button(ch, key="chip" + ch, use_container_width=True, on_click=lambda ch=ch: st.session_state.update(pq=ch))
+
+if view != OV:
+    with hdr: chips_bar()
+
+@st.fragment   # only this part reruns on chat actions -> much faster
+def chat():
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
     if not st.session_state.msgs: st.caption("Pick a suggestion above or type your question below 👇")
     for i, m in enumerate(st.session_state.msgs):          # oldest -> newest, new answers appear at the bottom
         with st.chat_message("user"): st.write(m["q"])
