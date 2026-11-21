@@ -15,7 +15,7 @@ h1{font-weight:800;letter-spacing:-.5px}
 def gclient():
     return genai.Client(api_key=st.secrets["GEMINI_API_KEY"], http_options={"timeout": 60000})  # 60s max, no endless waiting
 
-def llm(prompt):
+def gemini(prompt):
     import time
     from google.genai import types
     main = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
@@ -35,6 +35,25 @@ def llm(prompt):
             if any(k in msg for k in ("503", "429", "UNAVAILABLE", "overloaded", "RESOURCE_EXHAUSTED")):
                 time.sleep(2 * (attempt + 1)); continue
             break                              # real error (404, bad key...) -> next model
+    raise last
+
+def groq(prompt):
+    import requests
+    r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {st.secrets['GROQ_API_KEY']}"},
+        json={"model": st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile"), "temperature": 0.2,
+              "messages": [{"role": "user", "content": prompt}]}, timeout=60)
+    if r.status_code != 200: raise RuntimeError(f"Groq {r.status_code}: {r.text[:300]}")
+    return r.json()["choices"][0]["message"]["content"]
+
+def llm(prompt):
+    """Tries providers in order; LLM_PRIMARY = "groq" or "gemini" (default gemini)."""
+    order = [gemini, groq] if st.secrets.get("LLM_PRIMARY", "gemini") != "groq" else [groq, gemini]
+    if not st.secrets.get("GROQ_API_KEY"): order = [gemini]
+    last = None
+    for fn in order:
+        try: return fn(prompt)
+        except Exception as e: last = e
     raise last
 
 # ---------------- Memory (Google Sheet "Learning" tab) ----------------
