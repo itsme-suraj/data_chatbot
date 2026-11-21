@@ -8,6 +8,7 @@ st.set_page_config(page_title="DataPilot AI", page_icon="📊", layout="wide")
 st.markdown("""<style>
 .block-container{padding-top:3rem;max-width:1500px}
 html{font-size:15px}[data-testid=stChatMessage]{padding:.5rem .75rem}
+.st-key-hdr{position:sticky;top:3.4rem;z-index:100;background:var(--background-color,#0e1117);padding:.3rem 0 .4rem;border-bottom:1px solid rgba(128,128,128,.25)}
 .hero{font-size:1.5rem;font-weight:800;margin:0 0 .2rem}.sub{opacity:.65;font-size:.85rem;margin-bottom:.6rem}
 [data-testid=stTabs] [role=tablist]{position:sticky;top:0;z-index:5;background:var(--background-color)}
 h1{font-weight:800;letter-spacing:-.5px}
@@ -193,7 +194,10 @@ def auto_charts(df):
     for f in figs: f.update_layout(height=290, margin=dict(l=10, r=10, t=45, b=10))
     return figs
 
-st.markdown('<div class="hero">📊 DataPilot AI</div><div class="sub">Upload or paste data, then ask anything. It learns from your 👍 / 👎.</div>', unsafe_allow_html=True)
+OV = "🔎 Overview"
+with st.container(key="hdr"):   # stays frozen at the top while the page scrolls
+    st.markdown('<div class="hero">📊 DataPilot AI</div><div class="sub">Upload or paste data, then ask anything. It learns from your 👍 / 👎.</div>', unsafe_allow_html=True)
+    view = st.radio("view", [OV, "💬 Ask AI"], horizontal=True, label_visibility="collapsed", key="view")
 try: df, name = load()
 except Exception as e: st.sidebar.error(str(e)); df = None
 if df is None:
@@ -205,8 +209,6 @@ prof = profile(df)
 if st.session_state.get("ds") != sig + str(len(df)):
     st.session_state.update(ds=sig + str(len(df)), msgs=[], summary=None)
 
-OV = "🔎 Overview"
-view = st.radio("view", [OV, "💬 Ask AI"], horizontal=True, label_visibility="collapsed", key="view")
 if view == OV:
     a, b, c, d, e = st.columns(5)
     a.metric("Rows", f"{len(df):,}"); b.metric("Columns", df.shape[1])
