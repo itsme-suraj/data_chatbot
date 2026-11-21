@@ -15,31 +15,35 @@ def llm(prompt):
     c = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
     return c.models.generate_content(model=st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash"), contents=prompt).text
 
-# ---------------- Memory (Supabase, optional) ----------------
-@st.cache_resource
-def sb():
+# ---------------- Memory (Google Sheet "Learning" tab) ----------------
+def sheet_url(tab): return f"https://docs.google.com/spreadsheets/d/{st.secrets['SHEET_ID']}/gviz/tq?tqx=out:csv&sheet={tab}"
+
+@st.cache_data(ttl=30)
+def sheet_csv(tab): return pd.read_csv(sheet_url(tab))
+
+def log(kind, sig, q="", code="", rating=0, note=""):
     try:
-        from supabase import create_client
-        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-    except Exception:
-        return None
+        import requests
+        requests.post(st.secrets["SCRIPT_URL"], json=dict(token=st.secrets["SCRIPT_TOKEN"], kind=kind, sig=sig, question=q, code=code, rating=rating, note=note), timeout=20)
+        sheet_csv.clear()
+    except Exception: pass
 
 def examples(sig):
-    try:
-        r = sb().table("ai_memory").select("question,code").eq("sig", sig).eq("rating", 1).order("created_at", desc=True).limit(3).execute()
-        return "\n\n".join(f"# Past good example\nQ: {x['question']}\n```python\n{x['code']}\n```" for x in r.data)
-    except Exception:
-        return ""
+    try: m = sheet_csv("Learning")
+    except Exception: return ""
+    if m.empty or "sig" not in m: return ""
+    m = m[m["sig"] == sig]; out = []
+    k = m[m["kind"] == "dataset_summary"].tail(1)
+    if len(k): out.append("WHAT I LEARNED ABOUT THIS DATASET EARLIER: " + str(k["note"].iloc[0]))
+    for _, r in m[(m["kind"] == "qa") & (m["rating"] == 1)].tail(3).iterrows():
+        out.append(f"# Past GOOD example\nQ: {r['question']}\n```python\n{r['code']}\n```")
+    bad = m[(m["kind"] == "qa") & (m["rating"] == -1)].tail(2)["question"].tolist()
+    if bad: out.append("User disliked answers to: " + "; ".join(map(str, bad)) + ". Be more careful on similar questions.")
+    return "\n\n".join(out)
 
-def save(sig, q, code):
-    try: return sb().table("ai_memory").insert({"sig": sig, "question": q, "code": code}).execute().data[0]["id"]
-    except Exception: return None
-
-def rate(mid, v):
-    try:
-        if mid: sb().table("ai_memory").update({"rating": v}).eq("id", mid).execute()
-        st.toast("Thanks! I will remember this." if v == 1 else "Noted, I will avoid this approach.")
-    except Exception: pass
+def rate(m, v):
+    log("qa", m["sig"], m["q"], m["code"], v)
+    st.toast("Learned! Saved to the Learning tab." if v == 1 else "Noted, I will avoid this approach.")
 
 # ---------------- Data loading ----------------
 def gsheet_url(u):
@@ -56,7 +60,10 @@ def clean(df):
     return df
 
 def load():
-    src = st.sidebar.radio("Data source", ["Upload CSV / Excel", "Google Sheet link", "Paste data"])
+    src = st.sidebar.radio("Data source", ["My Sheet (Data tab)", "Upload CSV / Excel", "Google Sheet link", "Paste data"])
+    if src.startswith("My Sheet"):
+        if st.sidebar.button("🔄 Reload data"): sheet_csv.clear()
+        return clean(sheet_csv("Data").copy()), "sheet-data"
     if src == "Upload CSV / Excel":
         f = st.sidebar.file_uploader("File", type=["csv", "xlsx", "xls"])
         if not f: return None, ""
@@ -141,6 +148,7 @@ with t1:
         with st.spinner("Reading your data..."):
             try: st.session_state.summary = llm(f"You are a senior analyst. Explain this dataset in simple Hinglish-friendly English: what it is about, key patterns, data quality issues, and 5 smart questions to ask next.\n{prof}\nSAMPLE:\n{df.head(8).to_string()}")
             except Exception as e: st.error(e)
+        if st.session_state.summary: log("dataset_summary", sig, note=st.session_state.summary[:1500])
     if st.session_state.summary: st.markdown(st.session_state.summary)
 
 with t2:
@@ -152,12 +160,12 @@ with t2:
             if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
             with st.expander("View code"): st.code(m["code"], language="python")
             x, y, _ = st.columns([1, 1, 8])
-            x.button("👍", key=f"u{i}", on_click=rate, args=(m["id"], 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m["id"], -1))
+            x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
     if q := st.chat_input("Ask about your data… e.g. 'month-wise sales trend chart'"):
         with st.spinner("Analyzing..."):
             try:
                 code, (ans, tbl, fig) = ask(q, df, prof, sig)
-                st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, id=save(sig, q, code)))
+                st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig))
             except Exception as e:
-                st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {e}. Try rephrasing.", table=None, fig=None, code="", id=None))
+                st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {e}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
         st.rerun()
