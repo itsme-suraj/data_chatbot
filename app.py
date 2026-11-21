@@ -11,9 +11,23 @@ h1{font-weight:800;letter-spacing:-.5px}
 </style>""", unsafe_allow_html=True)
 
 # ---------------- LLM (free Gemini) ----------------
+@st.cache_resource
+def gclient():
+    return genai.Client(api_key=st.secrets["GEMINI_API_KEY"], http_options={"timeout": 60000})  # 60s max, no endless waiting
+
 def llm(prompt):
-    c = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    return c.models.generate_content(model=st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash"), contents=prompt).text
+    model = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
+    try:  # low thinking = much faster answers
+        from google.genai import types
+        cfg = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_level="low"))
+    except Exception:
+        cfg = None
+    try:
+        return gclient().models.generate_content(model=model, contents=prompt, config=cfg).text
+    except Exception as e:
+        if cfg is not None and "thinking" in str(e).lower():  # model/SDK does not support it -> retry plain
+            return gclient().models.generate_content(model=model, contents=prompt).text
+        raise
 
 # ---------------- Memory (Google Sheet "Learning" tab) ----------------
 def sheet_url(tab): return f"https://docs.google.com/spreadsheets/d/{st.secrets['SHEET_ID']}/gviz/tq?tqx=out:csv&sheet={tab}"
