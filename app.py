@@ -16,18 +16,26 @@ def gclient():
     return genai.Client(api_key=st.secrets["GEMINI_API_KEY"], http_options={"timeout": 60000})  # 60s max, no endless waiting
 
 def llm(prompt):
-    model = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
-    try:  # low thinking = much faster answers
-        from google.genai import types
-        cfg = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_level="low"))
-    except Exception:
-        cfg = None
-    try:
-        return gclient().models.generate_content(model=model, contents=prompt, config=cfg).text
-    except Exception as e:
-        if cfg is not None and "thinking" in str(e).lower():  # model/SDK does not support it -> retry plain
-            return gclient().models.generate_content(model=model, contents=prompt).text
-        raise
+    import time
+    from google.genai import types
+    main = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
+    extra = [m.strip() for m in str(st.secrets.get("GEMINI_FALLBACKS", "")).split(",") if m.strip()]
+    last = None
+    for model in [main] + extra:               # try main model, then backups
+        for attempt in range(3):               # retry on busy servers
+            for use_cfg in (True, False):      # low thinking = faster; plain if unsupported
+                try:
+                    cfg = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_level="low")) if use_cfg else None
+                    return gclient().models.generate_content(model=model, contents=prompt, config=cfg).text
+                except Exception as e:
+                    last = e
+                    if use_cfg and "thinking" in str(e).lower(): continue
+                    break
+            msg = str(last)
+            if any(k in msg for k in ("503", "429", "UNAVAILABLE", "overloaded", "RESOURCE_EXHAUSTED")):
+                time.sleep(2 * (attempt + 1)); continue
+            break                              # real error (404, bad key...) -> next model
+    raise last
 
 # ---------------- Memory (Google Sheet "Learning" tab) ----------------
 def sheet_url(tab): return f"https://docs.google.com/spreadsheets/d/{st.secrets['SHEET_ID']}/gviz/tq?tqx=out:csv&sheet={tab}"
