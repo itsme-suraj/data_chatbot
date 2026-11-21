@@ -5,7 +5,9 @@ from google import genai
 
 st.set_page_config(page_title="DataPilot AI", page_icon="📊", layout="wide")
 st.markdown("""<style>
-.block-container{padding-top:3.2rem;max-width:1200px}
+.block-container{padding-top:3rem;max-width:1500px}
+html{font-size:15px}[data-testid=stChatMessage]{padding:.5rem .75rem}
+.hero{font-size:1.5rem;font-weight:800;margin:0 0 .2rem}.sub{opacity:.65;font-size:.85rem;margin-bottom:.6rem}
 [data-testid=stTabs] [role=tablist]{position:sticky;top:0;z-index:5;background:var(--background-color)}
 h1{font-weight:800;letter-spacing:-.5px}
 [data-testid=stMetric]{background:var(--secondary-background-color);padding:14px 16px;border-radius:12px;border-left:4px solid #0f766e}
@@ -158,8 +160,8 @@ SAMPLE:
 {df.head(5).to_string()}
 
 RULES: write python only. NO imports (pd, np, px, go are ready). Never modify df; use d = df.copy().
-Set `answer` = markdown string with real computed numbers (use f-strings) and a clear business insight.
-Optionally set `table` (DataFrame) and `fig` (plotly figure, template='plotly_white', titled, labelled).
+Set `answer` = SHORT markdown (max 4 bullets or 5 lines, no long paragraphs) with real computed numbers (use f-strings) and one clear insight.
+Optionally set `table` (DataFrame) and `fig` (plotly figure, titled, labelled, height<=380).
 Reply with ONE ```python block only.
 LANGUAGE: {lang_rule()} This applies to `answer` text and chart titles/labels. Keep variable names and column names in English.
 {examples(sig)}
@@ -174,8 +176,23 @@ QUESTION: {q}"""
     raise err
 
 # ---------------- UI ----------------
-st.title("📊 DataPilot AI")
-st.caption("Upload or paste your data, then ask anything. It learns from your 👍 / 👎.")
+@st.cache_data(show_spinner=False)
+def auto_charts(df):
+    num = [c for c in df.select_dtypes("number") if df[c].nunique() > 5 and not c.lower().endswith("id")][:3]
+    dt = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+    cat = [c for c in df.select_dtypes(["object", "category"]) if 2 <= df[c].nunique() <= 15][:3]
+    figs = []
+    if dt and num:
+        t = df.groupby(df[dt[0]].dt.to_period("M").astype(str))[num[0]].sum().reset_index()
+        figs.append(px.line(t, x=dt[0], y=num[0], markers=True, title=f"{num[0]} by month"))
+    for c in cat:
+        v = df[c].value_counts().head(10).reset_index(); v.columns = [c, "count"]
+        figs.append(px.bar(v, x=c, y="count", title=f"{c}: count"))
+    for c in num[:2]: figs.append(px.histogram(df, x=c, title=f"{c} distribution"))
+    for f in figs: f.update_layout(height=290, margin=dict(l=10, r=10, t=45, b=10))
+    return figs
+
+st.markdown('<div class="hero">📊 DataPilot AI</div><div class="sub">Upload or paste data, then ask anything. It learns from your 👍 / 👎.</div>', unsafe_allow_html=True)
 try: df, name = load()
 except Exception as e: st.sidebar.error(str(e)); df = None
 if df is None:
@@ -189,24 +206,39 @@ if st.session_state.get("ds") != sig + str(len(df)):
 
 t1, t2 = st.tabs(["🔎 Overview", "💬 Ask AI"])
 with t1:
-    a, b, c, d = st.columns(4)
+    a, b, c, d, e = st.columns(5)
     a.metric("Rows", f"{len(df):,}"); b.metric("Columns", df.shape[1])
-    c.metric("Missing cells", f"{int(df.isna().sum().sum()):,}"); d.metric("Duplicates", int(df.duplicated().sum()))
-    st.dataframe(df.head(50), use_container_width=True)
-    miss = df.isna().sum(); miss = miss[miss > 0]
-    if len(miss): st.plotly_chart(px.bar(miss, title="Missing values by column", template="plotly_white"), use_container_width=True)
-    if st.button("🧠 Analyze this dataset", type="primary"):
-        with st.spinner("Reading your data..."):
-            try: st.session_state.summary = llm(f"You are a senior analyst. Explain this dataset in simple words. {lang_rule()} Cover: what it is about, key patterns, data quality issues, and 5 smart questions to ask next.\n{prof}\nSAMPLE:\n{df.head(8).to_string()}")
-            except Exception as e: st.error(e)
-        if st.session_state.summary: log("dataset_summary", sig, note=st.session_state.summary[:1500])
-    if st.session_state.summary: st.markdown(st.session_state.summary)
+    c.metric("Numeric cols", df.select_dtypes("number").shape[1]); d.metric("Missing cells", f"{int(df.isna().sum().sum()):,}"); e.metric("Duplicates", int(df.duplicated().sum()))
+    figs = auto_charts(df)
+    for k in range(0, len(figs), 3):
+        cols = st.columns(3)
+        for col, f in zip(cols, figs[k:k + 3]): col.plotly_chart(f, use_container_width=True)
+    l, r = st.columns([3, 2])
+    with l:
+        with st.expander("📄 Data preview", expanded=True): st.dataframe(df.head(30), use_container_width=True, height=300)
+    with r:
+        with st.expander("🧠 AI summary", expanded=True):
+            if st.button("Analyze this dataset", type="primary"):
+                with st.spinner("Reading your data..."):
+                    try:
+                        st.session_state.summary = llm(f"You are a senior analyst. Explain this dataset in SHORT bullet points (max 8 bullets, no long paragraphs). {lang_rule()} Cover: what it is about, key patterns, data quality issues, and 4 smart questions to ask next.\n{prof}\nSAMPLE:\n{df.head(8).to_string()}")
+                        log("dataset_summary", sig, note=st.session_state.summary[:1500])
+                    except Exception as ex: st.error(ex)
+            st.markdown(st.session_state.summary or "_Click the button to get a quick summary._")
 
-with t2:
-    box = st.container(height=540, border=False)   # chat scrolls INSIDE this box; title, tabs and input stay in place
+@st.fragment   # only this part reruns on chat actions -> much faster
+def chat():
+    nums = [c for c in df.select_dtypes("number") if not c.lower().endswith("id")]
+    cats = [c for c in df.select_dtypes(["object", "category"]) if 2 <= df[c].nunique() <= 15]
+    chips = ["How many rows are there in total?", "Any data quality issues?"]
+    if nums and cats: chips.insert(1, f"{nums[0]} by {cats[0]} bar chart")
+    if nums: chips.append(f"Top 5 outliers in {nums[0]}")
+    cc = st.columns(len(chips))
+    for col, ch in zip(cc, chips): col.button(ch, key="chip" + ch, use_container_width=True, on_click=lambda ch=ch: st.session_state.update(pq=ch))
+    box = st.container(height=470, border=False)
     with box:
-        if not st.session_state.msgs: st.caption("Ask your first question below 👇 (latest answer shows on top)")
-        for i in reversed(range(len(st.session_state.msgs))):   # newest first -> no scrolling needed
+        if not st.session_state.msgs: st.caption("Pick a suggestion above or type your question below 👇 (latest answer shows on top)")
+        for i in reversed(range(len(st.session_state.msgs))):
             m = st.session_state.msgs[i]
             with st.chat_message("user"): st.write(m["q"])
             with st.chat_message("assistant"):
@@ -216,11 +248,14 @@ with t2:
                 with st.expander("View code"): st.code(m["code"], language="python")
                 x, y, _ = st.columns([1, 1, 8])
                 x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
-    if q := st.chat_input("Ask about your data… e.g. 'month-wise sales trend chart'"):
+    q = st.chat_input("Ask about your data… e.g. 'month-wise sales trend chart'") or st.session_state.pop("pq", None)
+    if q:
         with st.spinner("Analyzing..."):
             try:
                 code, (ans, tbl, fig) = ask(q, df, prof, sig)
                 st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig))
-            except Exception as e:
-                st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {e}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
-        st.rerun()
+            except Exception as ex:
+                st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {ex}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
+        st.rerun(scope="fragment")
+
+with t2: chat()
