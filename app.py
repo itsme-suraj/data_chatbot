@@ -1,21 +1,63 @@
 import re, io, builtins, threading, time
 import streamlit.components.v1 as components
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 import streamlit as st, pandas as pd, numpy as np
 import plotly.express as px, plotly.graph_objects as go
 from google import genai
 
 st.set_page_config(page_title="DataPilot AI", page_icon="📊", layout="wide")
-st.markdown("""<style>
-.block-container{padding-top:3rem;max-width:1500px}
-html{font-size:15px}[data-testid=stChatMessage]{padding:.5rem .75rem}
-.st-key-hdr{position:sticky;top:3.4rem;z-index:100;background:var(--background-color,#0e1117);padding:.3rem 0 .4rem;border-bottom:1px solid rgba(128,128,128,.25)}
-.st-key-hdr button p{font-size:.78rem}.st-key-hdr button{padding:.15rem .4rem;min-height:2rem}
+dark = st.sidebar.toggle("🌙 Dark mode", value=True, key="dark")
+P = (dict(bg="#0a0e1a", bgs="rgba(10,14,26,.85)", panel="rgba(255,255,255,.045)", panel2="#0f1424", field="rgba(255,255,255,.06)", border="rgba(255,255,255,.10)", text="#e8ecf6", mute="#94a3b8", a1="#6366f1", a2="#22d3ee") if dark else
+     dict(bg="#f3f5fb", bgs="rgba(243,245,251,.88)", panel="#ffffff", panel2="#ffffff", field="#f1f4fa", border="#e2e8f3", text="#0f172a", mute="#64748b", a1="#4f46e5", a2="#0891b2"))
+COLORS = ["#6366f1", "#22d3ee", "#a78bfa", "#34d399", "#fbbf24", "#f472b6", "#fb923c"]
+CSS = """
+.stApp{background:radial-gradient(1200px 500px at 85% -10%,color-mix(in srgb,var(--a1) 18%,transparent),transparent),var(--bg)}
+.stApp,.stApp p,.stApp span,.stApp label,.stApp li,.stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp small,.stApp summary{color:var(--text)}
+[data-testid=stHeader]{background:transparent}
+[data-testid=stSidebar]{background:var(--panel2);border-right:1px solid var(--border)}
+.block-container{padding-top:3rem;max-width:1500px;padding-bottom:6rem}
+html{font-size:15px}
+.stApp input,.stApp textarea,[data-baseweb=select]>div,[data-baseweb=input]>div,[data-baseweb=textarea]>div{background:var(--field)!important;color:var(--text)!important;border-color:var(--border)!important;border-radius:10px}
+[data-baseweb=popover] *{background-color:var(--panel2)!important;color:var(--text)!important}
+.stApp button[kind=secondary]{background:var(--panel);border:1px solid var(--border);border-radius:12px;transition:.15s}
+.stApp button[kind=secondary]:hover{border-color:var(--a1);transform:translateY(-1px)}
+.stApp button[kind=primary]{background:linear-gradient(135deg,var(--a1),var(--a2));border:0;border-radius:12px}
+.stApp button[kind=primary] p{color:#fff!important}
+[data-testid=stExpander]{background:var(--panel);border:1px solid var(--border);border-radius:14px}
+[data-testid=stExpander] details{border:0}
+[data-testid=stFileUploaderDropzone]{background:var(--field);border:1px dashed var(--border);border-radius:12px}
+[data-testid=stPlotlyChart]{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:.4rem}
+[data-testid=stChatMessage]{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:.7rem 1rem;margin-bottom:.5rem}
 [data-testid=stChatMessage] h1,[data-testid=stChatMessage] h2,[data-testid=stChatMessage] h3{font-size:1.05rem!important;margin:.3rem 0!important}
-.hero{font-size:1.5rem;font-weight:800;margin:0 0 .2rem}.sub{opacity:.65;font-size:.85rem;margin-bottom:.6rem}
-[data-testid=stTabs] [role=tablist]{position:sticky;top:0;z-index:5;background:var(--background-color)}
-h1{font-weight:800;letter-spacing:-.5px}
-[data-testid=stMetric]{background:var(--secondary-background-color);padding:14px 16px;border-radius:12px;border-left:4px solid #0f766e}
-</style>""", unsafe_allow_html=True)
+[data-testid=stBottom],[data-testid=stBottom]>div{background:var(--bg)!important}
+[data-testid=stChatInput]{background:var(--panel);border:1px solid var(--border);border-radius:16px}
+[data-testid=stChatInput] textarea{background:transparent!important}
+.st-key-hdr{position:sticky;top:3.4rem;z-index:100;background:var(--bgs);backdrop-filter:blur(12px);padding:.3rem 0 .5rem;border-bottom:1px solid var(--border)}
+.st-key-hdr button p{font-size:.78rem}.st-key-hdr button{padding:.15rem .4rem;min-height:2rem}
+.st-key-hdr [data-testid=stRadio] label>div:first-child{display:none}
+.st-key-hdr [data-testid=stRadio] label{padding:.35rem 1rem;border-radius:999px;border:1px solid var(--border);background:var(--panel);cursor:pointer}
+.st-key-hdr [data-testid=stRadio] label:has(input:checked){background:linear-gradient(135deg,var(--a1),var(--a2));border-color:transparent}
+.st-key-hdr [data-testid=stRadio] label:has(input:checked) p{color:#fff!important;font-weight:700}
+.hero{font-size:1.75rem;font-weight:800;line-height:1.2;background:linear-gradient(90deg,var(--a1),var(--a2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;width:fit-content}
+.sub{color:var(--mute);font-size:.85rem;margin-bottom:.5rem}
+.kpi{background:var(--panel);border:1px solid var(--border);border-top:3px solid var(--a1);border-radius:14px;padding:.8rem 1rem}
+.kpi span{color:var(--mute);font-size:.78rem;font-weight:600}.kpi b{display:block;font-size:1.6rem;line-height:1.3}
+.welcome{background:var(--panel);border:1px dashed var(--border);border-radius:18px;padding:1.6rem;text-align:center;margin:1rem 0}
+.welcome p{color:var(--mute)}
+.tbl-wrap{overflow:auto;max-height:320px;border:1px solid var(--border);border-radius:12px}
+.tbl{width:100%;border-collapse:collapse;font-size:.8rem}
+.tbl th{position:sticky;top:0;background:var(--panel2);color:var(--mute);text-align:left;padding:.5rem .7rem;white-space:nowrap}
+.tbl td{padding:.4rem .7rem;border-top:1px solid var(--border);white-space:nowrap}
+"""
+st.markdown("<style>:root{" + "".join(f"--{k}:{v};" for k, v in P.items()) + "}" + CSS + "</style>", unsafe_allow_html=True)
+
+def sty(f):
+    f = go.Figure(f)
+    f.update_layout(template="plotly_dark" if dark else "plotly_white", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", colorway=COLORS, font=dict(color=P["text"]), margin=dict(l=10, r=10, t=50, b=10))
+    return f
+
+def html_table(d, n=30):
+    return '<div class="tbl-wrap">' + d.head(n).to_html(index=False, border=0, classes="tbl", na_rep="–") + "</div>"
 
 # ---------------- LLM (free Gemini) ----------------
 @st.cache_resource
@@ -102,7 +144,7 @@ def gsheet_url(u):
 def clean(df):
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(how="all").dropna(axis=1, how="all")
-    for c in df.select_dtypes("object"):
+    for c in df.select_dtypes(["object", "string"]):
         if "date" in c.lower() or "time" in c.lower():
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return df
@@ -201,7 +243,7 @@ def ask(q, df, prof, sig, hist=""):
 def auto_charts(df):
     num = [c for c in df.select_dtypes("number") if df[c].nunique() > 5 and not c.lower().endswith("id")][:3]
     dt = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
-    cat = [c for c in df.select_dtypes(["object", "category"]) if 2 <= df[c].nunique() <= 15][:3]
+    cat = [c for c in df.select_dtypes(["object", "string", "category"]) if 2 <= df[c].nunique() <= 15][:3]
     figs = []
     if dt and num:
         t = df.groupby(df[dt[0]].dt.to_period("M").astype(str))[num[0]].sum().reset_index()
@@ -210,12 +252,12 @@ def auto_charts(df):
         v = df[c].value_counts().head(10).reset_index(); v.columns = [c, "count"]
         figs.append(px.bar(v, x=c, y="count", title=f"{c}: count"))
     for c in num[:2]: figs.append(px.histogram(df, x=c, title=f"{c} distribution"))
-    for f in figs: f.update_layout(height=290, margin=dict(l=10, r=10, t=45, b=10))
+    for f in figs: f.update_layout(height=290)
     return figs
 
 OV = "🔎 Overview"
 hdr = st.container(key="hdr")
-with hdr:   # stays frozen at the top while the page scrolls
+with hdr:   # frozen header
     st.markdown('<div class="hero">📊 DataPilot AI</div><div class="sub">Upload or paste data, then ask anything. It learns from your 👍 / 👎.</div>', unsafe_allow_html=True)
     view = st.radio("view", [OV, "💬 Ask AI"], horizontal=True, label_visibility="collapsed", key="view")
 try: df, name = load()
@@ -230,16 +272,16 @@ if st.session_state.get("ds") != sig + str(len(df)):
     st.session_state.update(ds=sig + str(len(df)), msgs=[], summary=None)
 
 if view == OV:
-    a, b, c, d, e = st.columns(5)
-    a.metric("Rows", f"{len(df):,}"); b.metric("Columns", df.shape[1])
-    c.metric("Numeric cols", df.select_dtypes("number").shape[1]); d.metric("Missing cells", f"{int(df.isna().sum().sum()):,}"); e.metric("Duplicates", int(df.duplicated().sum()))
+    ks = [("📄 Rows", f"{len(df):,}"), ("🧱 Columns", df.shape[1]), ("🔢 Numeric cols", df.select_dtypes("number").shape[1]),
+          ("🕳️ Missing cells", f"{int(df.isna().sum().sum()):,}"), ("♊ Duplicates", int(df.duplicated().sum()))]
+    for col, (l, v) in zip(st.columns(5), ks): col.markdown(f'<div class="kpi"><span>{l}</span><b>{v}</b></div>', unsafe_allow_html=True)
+    st.write("")
     figs = auto_charts(df)
     for k in range(0, len(figs), 3):
-        cols = st.columns(3)
-        for col, f in zip(cols, figs[k:k + 3]): col.plotly_chart(f, use_container_width=True)
+        for j, (col, f) in enumerate(zip(st.columns(3), figs[k:k + 3])): col.plotly_chart(sty(f), width="stretch", theme=None, key=f"ac{k}{j}")
     l, r = st.columns([3, 2])
     with l:
-        with st.expander("📄 Data preview", expanded=True): st.dataframe(df.head(30), use_container_width=True, height=300)
+        with st.expander("📄 Data preview", expanded=True): st.markdown(html_table(df, 30), unsafe_allow_html=True)
     with r:
         with st.expander("🧠 AI summary", expanded=True):
             if st.button("Analyze this dataset", type="primary"):
@@ -249,29 +291,25 @@ if view == OV:
                         log("dataset_summary", sig, note=st.session_state.summary[:1500])
                     except Exception as ex: st.error(ex)
             st.markdown(st.session_state.summary or "_Click the button to get a quick summary._")
-
-def chips_bar():
+else:
     nums = [c for c in df.select_dtypes("number") if not c.lower().endswith("id")]
-    cats = [c for c in df.select_dtypes(["object", "category"]) if 2 <= df[c].nunique() <= 15]
+    cats = [c for c in df.select_dtypes(["object", "string", "category"]) if 2 <= df[c].nunique() <= 15]
     chips = ["How many rows are there in total?", "Any data quality issues?"]
     if nums and cats: chips.insert(1, f"{nums[0]} by {cats[0]} bar chart")
     if nums: chips.append(f"Top 5 outliers in {nums[0]}")
-    for col, ch in zip(st.columns(len(chips)), chips):
-        col.button(ch, key="chip" + ch, use_container_width=True, on_click=lambda ch=ch: st.session_state.update(pq=ch))
-
-if view != OV:
-    with hdr: chips_bar()
-
-@st.fragment   # only this part reruns on chat actions -> much faster
-def chat():
-    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-    if not st.session_state.msgs: st.caption("Pick a suggestion above or type your question below 👇")
-    for i, m in enumerate(st.session_state.msgs):          # oldest -> newest, new answers appear at the bottom
+    with hdr:
+        for col, ch in zip(st.columns(len(chips)), chips):
+            col.button(ch, key="chip" + ch, width="stretch", on_click=lambda ch=ch: st.session_state.update(pq=ch))
+    if not st.session_state.msgs:
+        st.markdown('<div class="welcome"><h3>👋 Ask anything about your data</h3><p>Try a suggestion above, type a question like <i>month-wise sales trend</i>, or just say hi.</p></div>', unsafe_allow_html=True)
+    for i, m in enumerate(st.session_state.msgs):          # oldest -> newest
         with st.chat_message("user"): st.write(m["q"])
         with st.chat_message("assistant"):
             st.markdown(m["answer"] or "_Done._")
-            if m["fig"] is not None: st.plotly_chart(m["fig"], use_container_width=True, key=f"f{i}")
-            if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
+            if m["fig"] is not None: st.plotly_chart(sty(m["fig"]), width="stretch", theme=None, key=f"f{i}")
+            if m["table"] is not None:
+                t = m["table"] if isinstance(m["table"], pd.DataFrame) else pd.DataFrame(m["table"])
+                st.markdown(html_table(t, 50), unsafe_allow_html=True)
             if m.get("kind") == "learn": st.caption(f"🧠 Saved to memory: {m['fact']}")
             if m["code"]:
                 with st.expander("View code"): st.code(m["code"], language="python")
@@ -295,15 +333,14 @@ def chat():
             time.sleep(1.4); k += 1
         if "r" in out:
             code, (ans, tbl, fig), meta = out["r"]
-            if meta["kind"] == "learn" and meta.get("fact"):      # teach the AI -> remember now + save in Learning tab
+            if meta["kind"] == "learn" and meta.get("fact"):
                 st.session_state.setdefault("facts", {}).setdefault(sig, []).append(meta["fact"])
                 log("definition", sig, q=q, note=meta["fact"])
             st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig, kind=meta["kind"], fact=meta.get("fact", "")))
         else:
-            st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {out.get('e')}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
+            st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {out.get('e')}. Try rephrasing.", table=None, fig=None, code="", sig=sig, kind="data"))
         st.session_state.scroll = True
-        st.rerun(scope="fragment")
-    if st.session_state.pop("scroll", False):                # jump to the newest answer
-        components.html("<script>const d=window.parent.document;const m=d.querySelector('[data-testid=\"stMain\"]')||d.querySelector('section.main');setTimeout(()=>m&&m.scrollTo({top:m.scrollHeight,behavior:'smooth'}),250)</script>", height=0)
-
-if view != OV: chat()
+        st.rerun()
+    if st.session_state.pop("scroll", False):
+        components.html("""<script>const d=window.parent.document;const m=d.querySelector('[data-testid="stMain"]')||d.querySelector('section.main');
+setTimeout(()=>m&&m.scrollTo({top:m.scrollHeight,behavior:'smooth'}),250)</script>""", height=0)
