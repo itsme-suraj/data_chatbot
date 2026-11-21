@@ -1,4 +1,5 @@
-import re, io, builtins
+import re, io, builtins, threading, time
+import streamlit.components.v1 as components
 import streamlit as st, pandas as pd, numpy as np
 import plotly.express as px, plotly.graph_objects as go
 from google import genai
@@ -204,8 +205,9 @@ prof = profile(df)
 if st.session_state.get("ds") != sig + str(len(df)):
     st.session_state.update(ds=sig + str(len(df)), msgs=[], summary=None)
 
-t1, t2 = st.tabs(["🔎 Overview", "💬 Ask AI"])
-with t1:
+OV = "🔎 Overview"
+view = st.radio("view", [OV, "💬 Ask AI"], horizontal=True, label_visibility="collapsed", key="view")
+if view == OV:
     a, b, c, d, e = st.columns(5)
     a.metric("Rows", f"{len(df):,}"); b.metric("Columns", df.shape[1])
     c.metric("Numeric cols", df.select_dtypes("number").shape[1]); d.metric("Missing cells", f"{int(df.isna().sum().sum()):,}"); e.metric("Duplicates", int(df.duplicated().sum()))
@@ -228,6 +230,7 @@ with t1:
 
 @st.fragment   # only this part reruns on chat actions -> much faster
 def chat():
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
     nums = [c for c in df.select_dtypes("number") if not c.lower().endswith("id")]
     cats = [c for c in df.select_dtypes(["object", "category"]) if 2 <= df[c].nunique() <= 15]
     chips = ["How many rows are there in total?", "Any data quality issues?"]
@@ -235,27 +238,39 @@ def chat():
     if nums: chips.append(f"Top 5 outliers in {nums[0]}")
     cc = st.columns(len(chips))
     for col, ch in zip(cc, chips): col.button(ch, key="chip" + ch, use_container_width=True, on_click=lambda ch=ch: st.session_state.update(pq=ch))
-    box = st.container(height=470, border=False)
-    with box:
-        if not st.session_state.msgs: st.caption("Pick a suggestion above or type your question below 👇 (latest answer shows on top)")
-        for i in reversed(range(len(st.session_state.msgs))):
-            m = st.session_state.msgs[i]
-            with st.chat_message("user"): st.write(m["q"])
-            with st.chat_message("assistant"):
-                st.markdown(m["answer"] or "_Done._")
-                if m["fig"] is not None: st.plotly_chart(m["fig"], use_container_width=True, key=f"f{i}")
-                if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
-                with st.expander("View code"): st.code(m["code"], language="python")
-                x, y, _ = st.columns([1, 1, 8])
-                x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
+    if not st.session_state.msgs: st.caption("Pick a suggestion above or type your question below 👇")
+    for i, m in enumerate(st.session_state.msgs):          # oldest -> newest, new answers appear at the bottom
+        with st.chat_message("user"): st.write(m["q"])
+        with st.chat_message("assistant"):
+            st.markdown(m["answer"] or "_Done._")
+            if m["fig"] is not None: st.plotly_chart(m["fig"], use_container_width=True, key=f"f{i}")
+            if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
+            with st.expander("View code"): st.code(m["code"], language="python")
+            x, y, _ = st.columns([1, 1, 8])
+            x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
     q = st.chat_input("Ask about your data… e.g. 'month-wise sales trend chart'") or st.session_state.pop("pq", None)
     if q:
-        with st.spinner("Analyzing..."):
-            try:
-                code, (ans, tbl, fig) = ask(q, df, prof, sig)
-                st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig))
-            except Exception as ex:
-                st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {ex}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
+        with st.chat_message("user"): st.write(q)
+        with st.chat_message("assistant"): ph = st.empty()
+        out = {}
+        def work():
+            try: out["r"] = ask(q, df, prof, sig)
+            except Exception as ex: out["e"] = ex
+        t = threading.Thread(target=work); add_script_run_ctx(t, get_script_run_ctx()); t.start()
+        steps = ["📖 Reading your data…", "🧠 Understanding your question…", "🧮 Crunching the numbers…", "📊 Drawing your chart…",
+                 "🍳 Cooking up your result, almost ready…", "✨ Adding the final touches…", "⏳ Please wait, good things take a moment…"]
+        t0, k = time.time(), 0
+        while t.is_alive():
+            ph.markdown(f"**{steps[min(k, len(steps) - 1)]}**  \n<span style='opacity:.6'>{int(time.time() - t0)}s elapsed</span>", unsafe_allow_html=True)
+            time.sleep(1.4); k += 1
+        if "r" in out:
+            code, (ans, tbl, fig) = out["r"]
+            st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig))
+        else:
+            st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {out.get('e')}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
+        st.session_state.scroll = True
         st.rerun(scope="fragment")
+    if st.session_state.pop("scroll", False):                # jump to the newest answer
+        components.html("<script>const d=window.parent.document;const m=d.querySelector('[data-testid=\"stMain\"]')||d.querySelector('section.main');setTimeout(()=>m&&m.scrollTo({top:m.scrollHeight,behavior:'smooth'}),250)</script>", height=0)
 
-with t2: chat()
+if view != OV: chat()
