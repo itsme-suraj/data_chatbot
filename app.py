@@ -255,6 +255,15 @@ def auto_charts(df):
     for f in figs: f.update_layout(height=290)
     return figs
 
+def js(scroll=False):
+    """Freezes the header (sticky on its wrapper too) and optionally smooth-scrolls to the newest message."""
+    go_down = "[150,800,1800].forEach(t=>setTimeout(down,t));" if scroll else ""
+    components.html("""<script>
+const d=window.parent.document;
+function stick(){let e=d.querySelector('.st-key-hdr');for(let i=0;i<4&&e&&!e.matches('[data-testid="stMainBlockContainer"]');i++){e.style.position='sticky';e.style.top='3.4rem';e.style.zIndex='100';e=e.parentElement}}
+function down(){const a=d.getElementById('dp-end');if(a)a.scrollIntoView({behavior:'smooth',block:'end'})}
+stick();[300,1200].forEach(t=>setTimeout(stick,t));""" + go_down + "</script>", height=0)
+
 OV = "🔎 Overview"
 hdr = st.container(key="hdr")
 with hdr:   # frozen header
@@ -291,6 +300,7 @@ if view == OV:
                         log("dataset_summary", sig, note=st.session_state.summary[:1500])
                     except Exception as ex: st.error(ex)
             st.markdown(st.session_state.summary or "_Click the button to get a quick summary._")
+    js()
 else:
     nums = [c for c in df.select_dtypes("number") if not c.lower().endswith("id")]
     cats = [c for c in df.select_dtypes(["object", "string", "category"]) if 2 <= df[c].nunique() <= 15]
@@ -319,6 +329,9 @@ else:
     if q:
         with st.chat_message("user"): st.write(q)
         with st.chat_message("assistant"): ph = st.empty()
+    st.markdown('<div id="dp-end" style="scroll-margin-bottom:110px"></div>', unsafe_allow_html=True)
+    js(scroll=bool(q) or st.session_state.pop("scroll", False))   # jump to the newest message
+    if q:
         hist = "\n".join(f"User: {m['q']}\nAI: {str(m['answer'])[:200]}" for m in st.session_state.msgs[-3:])
         out = {}
         def work():
@@ -341,6 +354,3 @@ else:
             st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {out.get('e')}. Try rephrasing.", table=None, fig=None, code="", sig=sig, kind="data"))
         st.session_state.scroll = True
         st.rerun()
-    if st.session_state.pop("scroll", False):
-        components.html("""<script>const d=window.parent.document;const m=d.querySelector('[data-testid="stMain"]')||d.querySelector('section.main');
-setTimeout(()=>m&&m.scrollTo({top:m.scrollHeight,behavior:'smooth'}),250)</script>""", height=0)
