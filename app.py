@@ -154,25 +154,42 @@ def lang_rule():
     if not l: return "Reply in the SAME language and script as the user's question (Hindi question -> Hindi, Hinglish -> Hinglish, English -> English)."
     return f"Reply ONLY in {l}."
 
-def ask(q, df, prof, sig):
-    prompt = f"""You are a senior data analyst. A pandas DataFrame `df` is already loaded.
-SCHEMA:
-{prof}
-SAMPLE:
-{df.head(5).to_string()}
+def facts_for(sig):
+    """Things the user taught the AI about this dataset (session + Learning tab)."""
+    f = list(st.session_state.get("facts", {}).get(sig, []))
+    try:
+        m = sheet_csv("Learning")
+        if not m.empty and "sig" in m:
+            f += [str(x) for x in m[(m["sig"] == sig) & (m["kind"] == "definition")]["note"].tail(25)]
+    except Exception: pass
+    return list(dict.fromkeys(f))
 
-RULES: write python only. NO imports (pd, np, px, go are ready). Never modify df; use d = df.copy().
-Set `answer` = SHORT markdown (max 4 bullets or 5 lines, no long paragraphs) with real computed numbers (use f-strings) and one clear insight.
-Optionally set `table` (DataFrame) and `fig` (plotly figure, titled, labelled, height<=380).
-Reply with ONE ```python block only.
-LANGUAGE: {lang_rule()} This applies to `answer` text and chart titles/labels. Keep variable names and column names in English.
-{examples(sig)}
-
-QUESTION: {q}"""
+def ask(q, df, prof, sig, hist=""):
+    facts = facts_for(sig)
+    facts_txt = ("USER-TAUGHT FACTS (always trust these):\n- " + "\n- ".join(facts)) if facts else ""
+    prompt = "\n".join([
+        "You are DataPilot, a friendly senior data analyst. A pandas DataFrame `df` is already loaded.",
+        "SCHEMA:", prof, "SAMPLE:", df.head(5).to_string(), facts_txt,
+        "RECENT CHAT:", hist or "(none)", "",
+        "FIRST DECIDE what the user wants:",
+        "1) Greeting, small talk, or a general-knowledge / non-data question -> reply EXACTLY `CHAT:` followed by a short, helpful answer. NO code.",
+        "2) The user is EXPLAINING what a column, value or term means in this dataset (e.g. 'iska matlab ...', 'X means ...', 'remember that ...') -> reply `LEARN: <one-sentence fact in English using exact column names>` then a new line with a short acknowledgment.",
+        "3) A question about the data -> reply with ONE ```python block only, following these rules:",
+        "   - NO imports (pd, np, px, go are ready). Never modify df; use d = df.copy().",
+        "   - Set `answer` = SHORT markdown (max 4 bullets or 5 lines) with real computed numbers (f-strings) and one clear insight.",
+        "   - Optionally set `table` (DataFrame) and `fig` (plotly figure, titled, labelled, height<=380).",
+        f"LANGUAGE: {lang_rule()} Applies to every reply, chart titles and labels. Keep variable and column names in English.",
+        examples(sig), "", f"QUESTION: {q}"])
     err = None
     for _ in range(2):
-        code = re.sub(r"^```(?:python)?|```$", "", llm(prompt).strip(), flags=re.M).strip()
-        try: return code, run(code, df)
+        raw = llm(prompt).strip()
+        up = raw.upper()
+        if up.startswith("CHAT:"): return "", (raw[5:].strip(), None, None), {"kind": "chat"}
+        if up.startswith("LEARN:"):
+            fact, _, ack = raw[6:].strip().partition("\n")
+            return "", (ack.strip() or "Got it, I will remember this! 🧠", None, None), {"kind": "learn", "fact": fact.strip()}
+        code = re.sub(r"^```(?:python)?|```$", "", raw, flags=re.M).strip()
+        try: return code, run(code, df), {"kind": "data"}
         except Exception as e:
             err = e; prompt += f"\n\nYour code failed with: {e}\nCODE:\n{code}\nFix it and reply with one python block."
     raise err
@@ -247,16 +264,19 @@ def chat():
             st.markdown(m["answer"] or "_Done._")
             if m["fig"] is not None: st.plotly_chart(m["fig"], use_container_width=True, key=f"f{i}")
             if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
-            with st.expander("View code"): st.code(m["code"], language="python")
-            x, y, _ = st.columns([1, 1, 8])
-            x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
+            if m.get("kind") == "learn": st.caption(f"🧠 Saved to memory: {m['fact']}")
+            if m["code"]:
+                with st.expander("View code"): st.code(m["code"], language="python")
+                x, y, _ = st.columns([1, 1, 8])
+                x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
     q = st.chat_input("Ask about your data… e.g. 'month-wise sales trend chart'") or st.session_state.pop("pq", None)
     if q:
         with st.chat_message("user"): st.write(q)
         with st.chat_message("assistant"): ph = st.empty()
+        hist = "\n".join(f"User: {m['q']}\nAI: {str(m['answer'])[:200]}" for m in st.session_state.msgs[-3:])
         out = {}
         def work():
-            try: out["r"] = ask(q, df, prof, sig)
+            try: out["r"] = ask(q, df, prof, sig, hist)
             except Exception as ex: out["e"] = ex
         t = threading.Thread(target=work); add_script_run_ctx(t, get_script_run_ctx()); t.start()
         steps = ["📖 Reading your data…", "🧠 Understanding your question…", "🧮 Crunching the numbers…", "📊 Drawing your chart…",
@@ -266,8 +286,11 @@ def chat():
             ph.markdown(f"**{steps[min(k, len(steps) - 1)]}**  \n<span style='opacity:.6'>{int(time.time() - t0)}s elapsed</span>", unsafe_allow_html=True)
             time.sleep(1.4); k += 1
         if "r" in out:
-            code, (ans, tbl, fig) = out["r"]
-            st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig))
+            code, (ans, tbl, fig), meta = out["r"]
+            if meta["kind"] == "learn" and meta.get("fact"):      # teach the AI -> remember now + save in Learning tab
+                st.session_state.setdefault("facts", {}).setdefault(sig, []).append(meta["fact"])
+                log("definition", sig, q=q, note=meta["fact"])
+            st.session_state.msgs.append(dict(q=q, answer=ans, table=tbl, fig=fig, code=code, sig=sig, kind=meta["kind"], fact=meta.get("fact", "")))
         else:
             st.session_state.msgs.append(dict(q=q, answer=f"⚠️ Could not answer: {out.get('e')}. Try rephrasing.", table=None, fig=None, code="", sig=sig))
         st.session_state.scroll = True
