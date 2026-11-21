@@ -5,7 +5,8 @@ from google import genai
 
 st.set_page_config(page_title="DataPilot AI", page_icon="📊", layout="wide")
 st.markdown("""<style>
-.block-container{padding-top:1.5rem;max-width:1200px}
+.block-container{padding-top:3.2rem;max-width:1200px}
+[data-testid=stTabs] [role=tablist]{position:sticky;top:0;z-index:5;background:var(--background-color)}
 h1{font-weight:800;letter-spacing:-.5px}
 [data-testid=stMetric]{background:var(--secondary-background-color);padding:14px 16px;border-radius:12px;border-left:4px solid #0f766e}
 </style>""", unsafe_allow_html=True)
@@ -202,15 +203,19 @@ with t1:
     if st.session_state.summary: st.markdown(st.session_state.summary)
 
 with t2:
-    for i, m in enumerate(st.session_state.msgs):
-        with st.chat_message("user"): st.write(m["q"])
-        with st.chat_message("assistant"):
-            st.markdown(m["answer"] or "_Done._")
-            if m["fig"] is not None: st.plotly_chart(m["fig"], use_container_width=True, key=f"f{i}")
-            if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
-            with st.expander("View code"): st.code(m["code"], language="python")
-            x, y, _ = st.columns([1, 1, 8])
-            x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
+    box = st.container(height=540, border=False)   # chat scrolls INSIDE this box; title, tabs and input stay in place
+    with box:
+        if not st.session_state.msgs: st.caption("Ask your first question below 👇 (latest answer shows on top)")
+        for i in reversed(range(len(st.session_state.msgs))):   # newest first -> no scrolling needed
+            m = st.session_state.msgs[i]
+            with st.chat_message("user"): st.write(m["q"])
+            with st.chat_message("assistant"):
+                st.markdown(m["answer"] or "_Done._")
+                if m["fig"] is not None: st.plotly_chart(m["fig"], use_container_width=True, key=f"f{i}")
+                if m["table"] is not None: st.dataframe(m["table"], use_container_width=True)
+                with st.expander("View code"): st.code(m["code"], language="python")
+                x, y, _ = st.columns([1, 1, 8])
+                x.button("👍", key=f"u{i}", on_click=rate, args=(m, 1)); y.button("👎", key=f"d{i}", on_click=rate, args=(m, -1))
     if q := st.chat_input("Ask about your data… e.g. 'month-wise sales trend chart'"):
         with st.spinner("Analyzing..."):
             try:
